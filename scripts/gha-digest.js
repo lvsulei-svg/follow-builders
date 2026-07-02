@@ -78,12 +78,90 @@ async function saveMd(digest){
   return fp;
 }
 
+function parseDigestSections(digest) {
+  const SECTION_PATTERNS = [
+    {re: /^##\s*(X\s*[\/\/]\s*TWITTER|X\/TWITTER|TWITTER|推文)/im, title: '🐦 X / Twitter'},
+    {re: /^##\s*(官方博客|OFFICIAL BLOGS?|BLOGS?|博客)/im, title: '📝 官方博客'},
+    {re: /^##\s*(PODCASTS?|播客)/im, title: '🎙️ Podcast 播客'},
+  ];
+  const lines = digest.split('\n');
+  const sections = [];
+  let intro = [];
+  let cur = null;
+  for (const line of lines) {
+    let matched = false;
+    for (const {re, title} of SECTION_PATTERNS) {
+      if (re.test(line)) {
+        if (cur) sections.push(cur);
+        cur = {title, lines: []};
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      if (cur) cur.lines.push(line);
+      else intro.push(line);
+    }
+  }
+  if (cur) sections.push(cur);
+  return {
+    intro: intro.join('\n').trim(),
+    sections: sections.map(s => ({title: s.title, content: s.lines.join('\n').trim()})),
+  };
+}
+
+function buildTocCard(label, digest, isWeekly) {
+  const {sections} = parseDigestSections(digest);
+  if (sections.length === 0) return null;
+  const parts = [];
+  for (const s of sections) {
+    if (!s.content.trim()) continue;
+    // Split into individual author/entry blocks by ### headers
+    const blocks = s.content.split(/(?=^###\s)/m).filter(b => b.trim());
+    parts.push(`**${s.title}** (${blocks.length})`);
+    for (const block of blocks) {
+      const lines = block.trim().split('\n');
+      const header = lines[0].replace(/^###\s*/, '').trim();
+      // First non-empty line that isn't a header or a bare URL
+      const preview = lines.slice(1).find(l => {
+        const t = l.trim();
+        return t && !t.startsWith('#') && !/^https?:\/\/\S+$/.test(t) && t.length > 5;
+      });
+      const previewClean = preview
+        ? preview.trim().replace(/\*\*/g, '').slice(0, 50) + (preview.trim().length > 50 ? '…' : '')
+        : '';
+      parts.push(`• ${header}${previewClean ? ' — ' + previewClean : ''}`);
+    }
+    parts.push('');
+  }
+  parts.push('👇 全文见下条消息');
+  return {
+    header: {title: {tag: 'plain_text', content: label + ' · 概览'}, template: isWeekly ? 'purple' : 'blue'},
+    elements: [{tag: 'markdown', content: parts.join('\n')}],
+  };
+}
+
+async function postToFeishu(url, card) {
+  const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msg_type: 'interactive', card})});
+  if (!res.ok) throw new Error(`Webhook ${res.status}: ${(await res.text()).slice(0, 300)}`);
+}
+
 async function sendFeishu(digest, url){
   if(!url){log('⚠️','未配置 webhook');return false;}
-  const text=digest.length>28000?digest.slice(0,28000)+'\n\n...(过长已截断)':digest;
   const label=isWeekly?`📊 AI Builders Weekly — ${today()}`:`🤖 AI Builders Digest — ${today()}`;
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({msg_type:'interactive',card:{header:{title:{tag:'plain_text',content:label},template:isWeekly?'purple':'blue'},elements:[{tag:'markdown',content:text}]}})});
-  if(!res.ok) throw new Error(`Webhook ${res.status}: ${(await res.text()).slice(0,300)}`);
+  // Message 1: compact overview card (who/what is covered today)
+  const tocCard = buildTocCard(label, digest, isWeekly);
+  if (tocCard) {
+    await postToFeishu(url, tocCard);
+    await new Promise(r => setTimeout(r, 600));
+  }
+  // Message 2: full digest
+  const text = digest.length > 28000 ? digest.slice(0, 28000) + '\n\n...(过长已截断)' : digest;
+  const fullCard = {
+    header: {title: {tag: 'plain_text', content: label + ' · 全文'}, template: isWeekly ? 'purple' : 'blue'},
+    elements: [{tag: 'markdown', content: text}],
+  };
+  await postToFeishu(url, fullCard);
   return true;
 }
 
