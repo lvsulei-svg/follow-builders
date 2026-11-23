@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // GitHub Actions Digest — local feeds → DeepSeek → MD → Feishu
+const BASE_URL = 'https://api.deepseek.com';
+const MODEL = 'deepseek-chat';
+
 import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -60,14 +63,52 @@ function buildUser(data){
   return m;
 }
 
-async function remix(data){
-  log('🧠',`调用 DeepSeek (${isWeekly?'周报':'日报'}模式)...`);
-  const res=await fetch(`${BASE_URL}/v1/messages`,{method:'POST',headers:{'Content-Type':'application/json','x-api-key':TOKEN,'anthropic-version':'2023-06-01'},body:JSON.stringify({model:MODEL,max_tokens:isWeekly?16384:8192,system:buildSystem(data),messages:[{role:'user',content:buildUser(data)}]})});
-  if(!res.ok){const e=await res.text();throw new Error(`API ${res.status}: ${e.slice(0,500)}`);}
-  const r=await res.json();
-  const tb=r?.content?.find(c=>c.type==='text');
-  if(!tb?.text) throw new Error('API 返回空内容');
-  return tb.text;
+async function remix(data) {
+  log('🧠', `调用 DeepSeek (${isWeekly ? '周报' : '日报'}模式)...`);
+
+  const res = await fetch(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${TOKEN}`,
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      stream: false,
+      max_tokens: 8192,
+      messages: [
+        {
+          role: 'system',
+          content: buildSystem(data),
+        },
+        {
+          role: 'user',
+          content: buildUser(data),
+        },
+      ],
+    }),
+  });
+
+  const raw = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${raw.slice(0, 500)}`);
+  }
+
+  let result;
+  try {
+    result = JSON.parse(raw);
+  } catch {
+    throw new Error(`API 返回的不是有效 JSON: ${raw.slice(0, 500)}`);
+  }
+
+  const text = result?.choices?.[0]?.message?.content;
+
+  if (!text?.trim()) {
+    throw new Error(`API 无文本输出: ${raw.slice(0, 500)}`);
+  }
+
+  return text.trim();
 }
 
 async function saveMd(digest){
