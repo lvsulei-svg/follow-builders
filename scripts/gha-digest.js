@@ -44,7 +44,11 @@ function buildSystem(data){
   pm+=`\n\n## 博客摘要规则\n${p.summarize_blogs||''}`;
   pm+=`\n\n## Podcast 摘要规则\n${p.summarize_podcast||''}`;
   pm+=`\n\n## 语言规则\n${p.translate||''}`;
-  pm+=`\n\n## 双语输出（中文优先）\n- 每条内容先中文后英文，中间空一行，严格交替`;
+  pm+=`\n\n## 输出语言（最高优先级）
+- 只使用简体中文
+- 英文内容翻译为自然流畅的中文
+- 人名、公司名、产品名和 URL 可以保留原文
+- 不要附带英文原文或英文译文`;
   pm+=`\n\n## 核心规则\n- 只使用真实数据，绝不编造\n- 每条内容必须带原文链接\n- 适合手机阅读\n- 语气专业但轻松\n- 安静的 builder 直接跳过\n- 末尾加: "Generated through Follow Builders: https://github.com/zarazhangrui/follow-builders"`;
   return pm;
 }
@@ -224,7 +228,7 @@ async function main(){
   const label=isWeekly?'Week in Review':today();
   console.log('═══════════════════════════════════════════');
   console.log(`  🤖 AI Builders ${isWeekly?'Weekly':'Digest'} — ${label}`);
-  console.log('  Bilingual (中文 → English)');
+  console.log('  Chinese Only (仅中文)');
   console.log('═══════════════════════════════════════════\n');
   const data=await loadData();
   const s=data.stats||{};
