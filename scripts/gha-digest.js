@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // GitHub Actions Digest — local feeds → DeepSeek → MD → Feishu
-
 import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -26,9 +25,9 @@ function log(e,m) { console.log(`[${new Date().toISOString()}] ${e} ${m}`); }
 async function loadData() {
   log('📂','加载本地 feed...');
   let fx={},fp={},fb={},prompts={};
-  try{fx=JSON.parse(await readFile(join(REPO_DIR,'feed-x.json'),'utf-8'));}catch(e){}
-  try{fp=JSON.parse(await readFile(join(REPO_DIR,'feed-podcasts.json'),'utf-8'));}catch(e){}
-  try{fb=JSON.parse(await readFile(join(REPO_DIR,'feed-blogs.json'),'utf-8'));}catch(e){}
+  try{fx=JSON.parse(await readFile(join(REPO_DIR,'feed-x.json'),'utf-8'));}catch(e){log('⚠️',`读取 feed-x.json 失败: ${e.message}`);}
+  try{fp=JSON.parse(await readFile(join(REPO_DIR,'feed-podcasts.json'),'utf-8'));}catch(e){log('⚠️',`读取 feed-podcasts.json 失败: ${e.message}`);}
+  try{fb=JSON.parse(await readFile(join(REPO_DIR,'feed-blogs.json'),'utf-8'));}catch(e){log('⚠️',`读取 feed-blogs.json 失败: ${e.message}`);}
   for(const k of ['digest-intro','summarize-tweets','summarize-blogs','summarize-podcast','translate']){
     try{prompts[k.replace(/-/g,'_')]=await readFile(join(REPO_DIR,'prompts',`${k}.md`),'utf-8');}catch(e){}
   }
@@ -61,52 +60,62 @@ function buildUser(data){
   return m;
 }
 
-async function remix(data) {
-  log('🧠', `调用 DeepSeek (${isWeekly ? '周报' : '日报'}模式)...`);
+async function remix(data){
+  if(!TOKEN) throw new Error('未配置 DEEPSEEK_API_KEY');
 
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      stream: false,
-      max_tokens: 8192,
-      messages: [
-        {
-          role: 'system',
-          content: buildSystem(data),
+  const maxAttempts=3;
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+    log('🧠',`调用 DeepSeek (${isWeekly?'周报':'日报'}模式，第 ${attempt}/${maxAttempts} 次)...`);
+    try{
+      const res=await fetch(`${BASE_URL}/chat/completions`,{
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${TOKEN}`,
         },
-        {
-          role: 'user',
-          content: buildUser(data),
-        },
-      ],
-    }),
-  });
+        body:JSON.stringify({
+          model:MODEL,
+          stream:false,
+          max_tokens:8192,
+          temperature:0.3,
+          messages:[
+            {role:'system',content:buildSystem(data)},
+            {role:'user',content:buildUser(data)},
+          ],
+        }),
+      });
 
-  const raw = await res.text();
+      const raw=await res.text();
+      if(!res.ok){
+        const error=new Error(`API ${res.status}: ${raw.slice(0,500)}`);
+        error.retryable=res.status===429||res.status>=500;
+        throw error;
+      }
 
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: ${raw.slice(0, 500)}`);
+      let result;
+      try{result=JSON.parse(raw);}catch{
+        const error=new Error(`API 返回的不是有效 JSON: ${raw.slice(0,500)}`);
+        error.retryable=true;
+        throw error;
+      }
+
+      const text=result?.choices?.[0]?.message?.content
+        ?? result?.content?.find(c=>c.type==='text')?.text
+        ?? result?.output_text;
+      if(text?.trim()) return text.trim();
+
+      const finishReason=result?.choices?.[0]?.finish_reason??result?.stop_reason??'unknown';
+      const error=new Error(`API 无文本输出 (finish_reason=${finishReason}): ${raw.slice(0,500)}`);
+      error.retryable=true;
+      throw error;
+    }catch(e){
+      if(attempt===maxAttempts||e.retryable===false) throw e;
+      log('⚠️',`DeepSeek 第 ${attempt} 次失败: ${e.message.slice(0,180)}，准备重试`);
+      await new Promise(resolve=>setTimeout(resolve,attempt*1500));
+    }
   }
 
-  let result;
-  try {
-    result = JSON.parse(raw);
-  } catch {
-    throw new Error(`API 返回的不是有效 JSON: ${raw.slice(0, 500)}`);
-  }
-
-  const text = result?.choices?.[0]?.message?.content;
-
-  if (!text?.trim()) {
-    throw new Error(`API 无文本输出: ${raw.slice(0, 500)}`);
-  }
-
-  return text.trim();
+  throw new Error('DeepSeek 多次调用均失败');
 }
 
 async function saveMd(digest){
@@ -151,7 +160,18 @@ function parseDigestSections(digest) {
 
 async function postToFeishu(url, card) {
   const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msg_type: 'interactive', card})});
-  if (!res.ok) throw new Error(`Webhook ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`Webhook HTTP ${res.status}: ${raw.slice(0, 500)}`);
+
+  let result;
+  try { result = JSON.parse(raw); }
+  catch { throw new Error(`飞书返回的不是有效 JSON: ${raw.slice(0, 500)}`); }
+
+  const code = result?.code ?? result?.StatusCode;
+  if (code !== undefined && String(code) !== '0') {
+    throw new Error(`飞书拒绝消息: ${raw.slice(0, 500)}`);
+  }
+  return result;
 }
 
 function buildCardV2(label, digest, isWeekly) {
