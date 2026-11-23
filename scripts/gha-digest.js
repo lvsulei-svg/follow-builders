@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 // GitHub Actions Digest — local feeds → DeepSeek → MD → Feishu
-const BASE_URL = 'https://api.deepseek.com';
-const MODEL = 'deepseek-chat';
 
 import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -14,8 +12,8 @@ const OUTPUT_DIR = join(__dirname, 'output');
 const TOKEN = process.env.DEEPSEEK_API_KEY;
 const WEBHOOK = process.env.FEISHU_WEBHOOK_URL;
 const WEBHOOK_GROUP = process.env.FEISHU_WEBHOOK_URL_GROUP;
-const BASE_URL = 'https://api.deepseek.com/anthropic';
-const MODEL = 'deepseek-v4-pro';
+const BASE_URL = 'https://api.deepseek.com';
+const MODEL = 'deepseek-chat';
 const isWeekly = process.argv.includes('--weekly');
 
 function today() {
